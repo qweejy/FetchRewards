@@ -1,0 +1,80 @@
+Was using Redshift as my database for loading and querying the data.
+
+--Second: Write a query that directly answers a predetermined question from a business stakeholder
+--What are the top 5 brands by receipts scanned for most recent month?
+--How does the ranking of the top 5 brands by receipts scanned for the recent month compare to the ranking for the previous month?
+with receipts_scanned as
+   (select ri.brandcode
+         , date_trunc('month',r.datescanned) month_begin_date
+         , count(distinct ri.receiptid) receipts_scanned_count
+      from junk.receiptitems ri
+           join junk.receipts r using (receiptid)
+     where r.datescanned >=  add_months(date_trunc('month', current_date),-2)
+       and r.datescanned < date_trunc('month', current_date)
+     group by 1,2)
+, agg as
+   (select month_begin_date
+         , brandcode
+--         , rank() over (partition by month_begin_date order by receipts_scanned_count desc) most_scanned_receipts_rank
+-- using row_number instead of rank to ensure that there is a discrete top 5 for comparison sake
+         , row_number() over (partition by month_begin_date order by receipts_scanned_count desc) most_scanned_receipts_rank
+         , receipts_scanned_count
+      from receipts_scanned)
+, main as
+   (select most_scanned_receipts_rank
+         , brandcode   most_recent_month_brandcode
+         , receipts_scanned_count most_recent_month_scanned_receipt_count
+         , lag(brandcode) over (partition by most_scanned_receipts_rank order by month_begin_date) preceding_month_brandcode
+         , lag(receipts_scanned_count) over (partition by most_scanned_receipts_rank order by month_begin_date) preceding_month_scanned_receipt_count
+         , (most_recent_month_scanned_receipt_count - preceding_month_scanned_receipt_count) / nullif(preceding_month_scanned_receipt_count,0) pct_change_in_receipt_count_by_position
+      from agg
+     where most_scanned_receipts_rank <= 5)
+select * from main where preceding_month_brandcode is not null 
+ order by 1, 2
+/
+ 
+ 
+--Third: Evaluate Data Quality Issues in the Data Provided
+--Simple checks to see if we have match up issues on perceived relationships (between file/non nested items)
+select ri.brandcode || 'Not found on the brands table' data_issue 
+  from junk.brands b full join
+       junk.receiptitems ri using (brandcode)
+ where b.brandcode is null and ri.brandcode is not null
+union all
+select ri.userid || 'Not found on the users table' data_issue 
+  from junk.users full join
+       junk.receiptitems ri using (usersid)
+ where b.userid is null and ri.userid is not null
+/
+On ReceiptItems
+"brandCode":"BEN AND JERRYS"
+"barcode":"076840100354"
+
+On Brands
+"brandCode": "BEN & JERRY'S"
+"barcode": "511111300939"
+
+
+
+Fourth: Communicate with Stakeholders
+
+Subject:  Data evaluation for files for receipts, users, and brands
+
+Hi {stakeholder name},
+
+        I did an evaluation of the data in the files I received on receipts, users, and brands.  The data came to me in an unstructured format and my initial
+concern was to try to determine inter-retlationships between the files and see if the data could be connected.  If the data cannot be reliably linked we won't
+be able to utilize the data from all of the files.  For example, if we cannot reliably link the brand file to the receipt file, we will not be able to use
+attributes like brand category or top brand flag when evaluating the receipts.  
+        I loaded the files into a database and tried to link the receipts/receipt items file to both the brands and users files, by joining the tables on what
+I perceived to be potential keys.  My analysis did determine that we have do not have a reliable link between the brands and receipts table.  The receipt item
+lists are at the item level and have a bar code and brand code associated with them which appeared to be the best way to link the files.  These did not reliably
+match; one such case is Ben and Jerry's.  It is represented as "BEN AND JERRYS" in the receipts file and as "BEN & JERRY'S" in the brand file.  We need to determine
+if these files are inaccurate or corrupted in some manner, and, if not, either need to determine a reliable link between this data (potentially through another
+file), cleanse the data, or disregard the brand data in any evaluation of the scanned receipt data.
+        I will be contacting the source of the files to determine next steps for resolving the file linkage issues.
+        
+                            Thanks,
+                            Steve Andres
+                            
+
